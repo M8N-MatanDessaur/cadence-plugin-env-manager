@@ -1,4 +1,4 @@
-# Environment Manager -- DevOps Pilot Plugin
+# Environment Manager -- Symphonee Plugin
 
 Manage .env files across all configured repos. Scans for environment variables, compares across environments (dev/staging/prod), detects leaked secrets in code, provides templates.
 
@@ -14,24 +14,24 @@ Manage .env files across all configured repos. Scans for environment variables, 
 
 ## Installation
 
-Copy or symlink this folder into `dashboard/plugins/` in your DevOps Pilot installation:
+Copy or symlink this folder into `dashboard/plugins/` in your Symphonee installation:
 
 ```
 dashboard/plugins/env-manager/
 ```
 
-Restart DevOps Pilot. The plugin will appear as a new tab.
+Restart Symphonee. The plugin will appear as a new tab.
 
 ## Configuration
 
-Settings are available in DevOps Pilot Settings > Plugins > Environment Manager:
+Settings are available in Symphonee Settings > Plugins > Environment Manager:
 
 - **Secret Patterns** -- Comma-separated key patterns to flag as potential secrets (default: PASSWORD,SECRET,TOKEN,KEY,API_KEY,PRIVATE,CREDENTIAL)
 - **Scan Extensions** -- File extensions to scan for env var usage (default: .js,.ts,.jsx,.tsx,.cs,.py)
 
 ## How It Works
 
-The plugin uses `getConfig().Repos` from the DevOps Pilot API to discover configured repos and their local paths. For each repo it:
+The plugin uses `getConfig().Repos` from the Symphonee API to discover configured repos and their local paths. For each repo it:
 
 1. Scans the root directory for .env files (.env, .env.local, .env.development, .env.staging, .env.production, .env.example, .env.template, and any other .env.* files)
 2. Parses KEY=VALUE pairs from each env file

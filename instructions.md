@@ -1,6 +1,6 @@
 ## Environment Manager Plugin -- AI Instructions
 
-You have access to an Environment Manager plugin via the DevOps Pilot API. This lets you scan repos for .env files, compare environments, detect secrets, find missing variables, and generate templates.
+You have access to an Environment Manager plugin via the Symphonee API. This lets you scan repos for .env files, compare environments, detect secrets, find missing variables, and generate templates.
 
 **All routes are at** `http://127.0.0.1:3800/api/plugins/env-manager/`
 
