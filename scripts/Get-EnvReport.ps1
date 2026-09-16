@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
-    Reads every repository again and prints the report.
+    Every repository: env files with git standing, variables, secrets, missing in code, unused, template drift, risk. Values are never included.
 .EXAMPLE
-    ./scripts/Start-EnvScan.ps1
+    ./scripts/Get-EnvReport.ps1
 #>
 [CmdletBinding()]
 param(
@@ -16,5 +16,4 @@ function Get-Api($path) { Invoke-RestMethod -Uri "$CadenceApi$path" -Headers $he
 function Post-Api($path, $payload) { Invoke-RestMethod -Uri "$CadenceApi$path" -Method Post -Headers $headers -ContentType 'application/json' -Body ($payload | ConvertTo-Json -Depth 8) -TimeoutSec 300 }
 function Esc($s) { [uri]::EscapeDataString([string]$s) }
 function Out-Json($o, $d = 6) { ConvertTo-Json -InputObject $o -Depth $d }
-Post-Api '/api/plugins/env-manager/scan-all' @{} | Out-Null
 Get-Api '/api/plugins/env-manager/overview' | ConvertTo-Json -Depth 7

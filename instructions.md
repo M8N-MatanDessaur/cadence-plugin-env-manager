@@ -1,6 +1,6 @@
 ## Environment Manager Plugin -- AI Instructions
 
-You have access to an Environment Manager plugin via the Symphonee API. This lets you scan repos for .env files, compare environments, detect secrets, find missing variables, and generate templates.
+You have access to an Environment Manager plugin via the Cadence API. This lets you scan repos for .env files, compare environments, detect secrets, find missing variables, and generate templates.
 
 **All routes are at** `http://127.0.0.1:3800/api/plugins/env-manager/`
 
@@ -154,3 +154,24 @@ The plugin auto-scans all repos on first load and shows cross-repo analysis auto
 **4. Security check**: Run the secrets endpoint to find hardcoded secrets in source code and verify all .env files with real values are gitignored.
 
 **5. Missing variable hunt**: Use the missing endpoint to find variables referenced in code but not defined in any .env file -- these will cause runtime errors.
+
+## In Cadence 3.0
+
+Routes live on the server that opened your shell: `$CADENCE_API/api/plugins/env-manager/` (bash `$CADENCE_API`, PowerShell `$env:CADENCE_API`, fallback `http://127.0.0.1:3800`). GET routes are read-only and MASK every secret value; an AI never receives a value and must never open a .env file. POST routes go through the permission gate and need the `x-cadence-token` header (the scripts attach it).
+
+| Route | What |
+|---|---|
+| `GET /overview` | Every repository: env files with git standing (ignored, tracked, exposed), template, variables, secret names, missing in code, unused, template drift, placeholders, risk |
+| `GET /repos/<name>/detail` | One repository: files, the variable matrix (secrets masked, empties and placeholders flagged, code references), missing, unused, drift, secrets hardcoded in source |
+| `GET /repos/<name>/variable?key=<KEY>` | One variable: presence per file (masked) and every line of code that reads it |
+| `GET /cross-repo` | Keys and (masked) values shared across repositories |
+| `POST /repos/<name>/reveal {file, key}` | The raw value - the UI's Reveal; never for an AI |
+| `POST /repos/<name>/set {file, key, value}` | Sets or adds one KEY=value, keeping order and comments |
+| `POST /repos/<name>/write-template {content?, file?}` | Writes .env.example (from the real files with secrets blank, or the content given) |
+| `POST /repos/<name>/protect` | Adds .env rules to .gitignore and reports files git still tracks with the untrack command |
+
+### Scripts (PowerShell, from the Cadence directory)
+
+Read: `Get-EnvReport`, `Get-EnvSummary`, `Get-RepoEnv -Repo`, `Get-EnvVariable -Repo -Key`, `Get-Secrets -Repo`, `Get-MissingVariables [-Repo | -All]`, `Get-EnvDrift`, `Get-SharedVariables`, `Compare-EnvFiles -Repo -Left -Right`. Write (gated): `Start-EnvScan`, `New-EnvTemplate -Repo [-Content]`, `Set-EnvVariable -Repo -File -Key -Value`, `Protect-EnvFiles -Repo`.
+
+Rules for an AI: work from names, files, git standing and code references; never print, guess or ask for a value; a tracked env file means the values are in git history and must be rotated after untracking; write a template or a variable only when the user asked for it.

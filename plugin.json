@@ -1,7 +1,7 @@
 {
   "id": "env-manager",
   "name": "Environment Manager",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Manage .env files across repos -- compare environments, detect secrets, find missing variables",
   "icon": "file-key",
   "tint": "245, 158, 11",
@@ -31,6 +31,167 @@
         "html": "tab.html"
       }
     ],
-    "routes": "routes.js"
-  }
+    "routes": "routes.js",
+    "surfaces": [
+      {
+        "id": "env",
+        "title": "Environments",
+        "icon": "shield",
+        "mount": "rail",
+        "entry": "ui/env.js",
+        "sidebar": true,
+        "aside": true
+      }
+    ],
+    "scripts": [
+      {
+        "file": "Get-EnvReport.ps1",
+        "label": "Environment report",
+        "description": "Env files, exposure, missing, drift and risk for every repository.",
+        "args": []
+      },
+      {
+        "file": "Get-EnvSummary.ps1",
+        "label": "Plain-text summary",
+        "description": "The report as text.",
+        "args": []
+      },
+      {
+        "file": "Get-RepoEnv.ps1",
+        "label": "Read a repository",
+        "description": "Files, variables (masked), missing, unused, drift and leaks of one repository.",
+        "args": [
+          {
+            "name": "Repo",
+            "label": "Repository"
+          }
+        ]
+      },
+      {
+        "file": "Get-EnvVariable.ps1",
+        "label": "Read a variable",
+        "description": "Where a variable is defined and every line that reads it.",
+        "args": [
+          {
+            "name": "Repo",
+            "label": "Repository"
+          },
+          {
+            "name": "Key",
+            "label": "Variable"
+          }
+        ]
+      },
+      {
+        "file": "Get-Secrets.ps1",
+        "label": "Secrets",
+        "description": "Secret names, exposed files, and hardcoded secrets of a repository.",
+        "args": [
+          {
+            "name": "Repo",
+            "label": "Repository"
+          }
+        ]
+      },
+      {
+        "file": "Get-MissingVariables.ps1",
+        "label": "Missing variables",
+        "description": "Read by code, defined nowhere; and defined, never read.",
+        "args": [
+          {
+            "name": "Repo",
+            "label": "Repository",
+            "default": ""
+          }
+        ]
+      },
+      {
+        "file": "Get-EnvDrift.ps1",
+        "label": "Template drift",
+        "description": "Real files versus the template, per repository.",
+        "args": []
+      },
+      {
+        "file": "Get-SharedVariables.ps1",
+        "label": "Shared variables",
+        "description": "What several repositories share.",
+        "args": []
+      },
+      {
+        "file": "Compare-EnvFiles.ps1",
+        "label": "Compare two env files",
+        "description": "Same, different, only-left, only-right.",
+        "args": [
+          {
+            "name": "Repo",
+            "label": "Repository"
+          },
+          {
+            "name": "Left",
+            "label": "File"
+          },
+          {
+            "name": "Right",
+            "label": "File"
+          }
+        ]
+      },
+      {
+        "file": "Start-EnvScan.ps1",
+        "label": "Rescan",
+        "description": "Reads the env files again.",
+        "mutates": true,
+        "args": []
+      },
+      {
+        "file": "New-EnvTemplate.ps1",
+        "label": "Write .env.example",
+        "description": "From the real files, secrets blank.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Repo",
+            "label": "Repository"
+          }
+        ]
+      },
+      {
+        "file": "Set-EnvVariable.ps1",
+        "label": "Set a variable",
+        "description": "Writes one KEY=value into an env file.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Repo",
+            "label": "Repository"
+          },
+          {
+            "name": "File",
+            "label": "Env file"
+          },
+          {
+            "name": "Key",
+            "label": "Variable"
+          },
+          {
+            "name": "Value",
+            "label": "Value"
+          }
+        ]
+      },
+      {
+        "file": "Protect-EnvFiles.ps1",
+        "label": "Ignore env files",
+        "description": "Adds .env rules to .gitignore; reports what is still tracked.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Repo",
+            "label": "Repository"
+          }
+        ]
+      }
+    ]
+  },
+  "sdkVersion": 3
 }

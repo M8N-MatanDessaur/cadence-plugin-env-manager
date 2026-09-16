@@ -1,26 +1,19 @@
+<#
+.SYNOPSIS
+    The report as plain text, for a quick read.
+.EXAMPLE
+    ./scripts/Get-EnvSummary.ps1
+#>
+[CmdletBinding()]
 param(
-    [string]$ApiBase = "http://127.0.0.1:3800"
+
 )
-
-$pluginBase = "$ApiBase/api/plugins/env-manager"
-
-try {
-    $summary = Invoke-RestMethod "$pluginBase/summary" -ContentType "text/plain"
-} catch {
-    Write-Host "`n  Environment Manager plugin not configured or unavailable.`n" -ForegroundColor Yellow
-    return
-}
-
-Write-Host "`n  === Environment Summary ===" -ForegroundColor Cyan
-Write-Host "  $(Get-Date -Format 'dddd, MMMM dd yyyy')" -ForegroundColor DarkGray
-Write-Host ""
-
-if ($summary) {
-    $summary -split "`n" | ForEach-Object {
-        Write-Host "  $_" -ForegroundColor DarkGray
-    }
-} else {
-    Write-Host "  No summary data available." -ForegroundColor Yellow
-}
-
-Write-Host ""
+$ErrorActionPreference = 'Stop'
+$CadenceApi = if ($env:CADENCE_API) { $env:CADENCE_API } else { 'http://127.0.0.1:3800' }
+$headers = @{}
+if ($env:CADENCE_TOKEN) { $headers['x-cadence-token'] = $env:CADENCE_TOKEN }
+function Get-Api($path) { Invoke-RestMethod -Uri "$CadenceApi$path" -Headers $headers -TimeoutSec 300 }
+function Post-Api($path, $payload) { Invoke-RestMethod -Uri "$CadenceApi$path" -Method Post -Headers $headers -ContentType 'application/json' -Body ($payload | ConvertTo-Json -Depth 8) -TimeoutSec 300 }
+function Esc($s) { [uri]::EscapeDataString([string]$s) }
+function Out-Json($o, $d = 6) { ConvertTo-Json -InputObject $o -Depth $d }
+(Invoke-WebRequest -UseBasicParsing -Uri "$CadenceApi/api/plugins/env-manager/summary" -Headers $headers -TimeoutSec 300).Content

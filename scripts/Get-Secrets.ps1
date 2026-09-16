@@ -1,63 +1,20 @@
+<#
+.SYNOPSIS
+    Secret-looking variables of a repository (names and files only) and secrets hardcoded in its source.
+.EXAMPLE
+    ./scripts/Get-Secrets.ps1 -Repo "MyRepo"
+#>
+[CmdletBinding()]
 param(
-    [string]$ApiBase = "http://127.0.0.1:3800",
-    [string]$Repo = ""
+    [Parameter(Mandatory)][string]$Repo
 )
-
-if (-not $Repo) {
-    Write-Host "`n  Usage: Get-Secrets.ps1 -Repo 'repo-name'" -ForegroundColor Yellow
-    Write-Host "  Run Get-EnvSummary.ps1 first to see available repos.`n" -ForegroundColor DarkGray
-    return
-}
-
-$pluginBase = "$ApiBase/api/plugins/env-manager"
-$encodedRepo = [System.Uri]::EscapeDataString($Repo)
-
-try {
-    $secrets = Invoke-RestMethod "$pluginBase/repos/$encodedRepo/secrets"
-    if (-not $secrets) { $secrets = @() }
-} catch {
-    Write-Host "`n  Could not fetch secrets for '$Repo'.`n" -ForegroundColor Yellow
-    return
-}
-
-Write-Host "`n  === Detected Secrets -- $Repo ===" -ForegroundColor Cyan
-Write-Host "  $(Get-Date -Format 'dddd, MMMM dd yyyy')" -ForegroundColor DarkGray
-
-if ($secrets.Count -eq 0) {
-    Write-Host "`n  No secrets detected. All clear!`n" -ForegroundColor Green
-    return
-}
-
-Write-Host "`n  Found $($secrets.Count) potential secret(s):`n" -ForegroundColor Yellow
-
-foreach ($s in $secrets) {
-    $type = if ($s.type) { $s.type } elseif ($s.kind) { $s.kind } else { "unknown" }
-    $file = if ($s.file) { $s.file } elseif ($s.path) { $s.path } else { "" }
-    $line = if ($s.line -ne $null) { ":$($s.line)" } else { "" }
-    $key = if ($s.key) { $s.key } elseif ($s.name) { $s.name } else { "" }
-
-    $sevColor = switch ($type.ToLower()) {
-        "api_key"     { "Red" }
-        "password"    { "Red" }
-        "token"       { "Red" }
-        "private_key" { "Red" }
-        "secret"      { "Red" }
-        default       { "Yellow" }
-    }
-
-    Write-Host "    [$type]" -ForegroundColor $sevColor -NoNewline
-    if ($key) {
-        Write-Host " $key" -ForegroundColor White -NoNewline
-    }
-    Write-Host ""
-    if ($file) {
-        Write-Host "      File: $file$line" -ForegroundColor DarkGray
-    }
-    if ($s.description) {
-        Write-Host "      $($s.description)" -ForegroundColor DarkGray
-    }
-}
-
-Write-Host "`n  ─────────────────────────────────" -ForegroundColor DarkGray
-Write-Host "  Total: $($secrets.Count) potential secrets" -ForegroundColor White
-Write-Host ""
+$ErrorActionPreference = 'Stop'
+$CadenceApi = if ($env:CADENCE_API) { $env:CADENCE_API } else { 'http://127.0.0.1:3800' }
+$headers = @{}
+if ($env:CADENCE_TOKEN) { $headers['x-cadence-token'] = $env:CADENCE_TOKEN }
+function Get-Api($path) { Invoke-RestMethod -Uri "$CadenceApi$path" -Headers $headers -TimeoutSec 300 }
+function Post-Api($path, $payload) { Invoke-RestMethod -Uri "$CadenceApi$path" -Method Post -Headers $headers -ContentType 'application/json' -Body ($payload | ConvertTo-Json -Depth 8) -TimeoutSec 300 }
+function Esc($s) { [uri]::EscapeDataString([string]$s) }
+function Out-Json($o, $d = 6) { ConvertTo-Json -InputObject $o -Depth $d }
+$d = Get-Api "/api/plugins/env-manager/repos/$(Esc $Repo)/detail"
+[pscustomobject]@{ repo = $Repo; secrets = @($d.secrets); exposedFiles = @($d.exposed); trackedFiles = @($d.tracked); hardcoded = @($d.leaked) } | ConvertTo-Json -Depth 5

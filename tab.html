@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<script src="/plugins/sdk/symphonee-sdk.js"></script>
+<script src="/plugins/sdk/cadence-sdk.js"></script>
 <style>
   * { box-sizing: border-box; }
   ::-webkit-scrollbar { width: 7px; height: 7px; }
@@ -897,7 +897,7 @@ function aiAction(type) {
       msg = 'Find all environment variables used in code but not defined in any .env file.\ncurl -s http://127.0.0.1:3800/api/plugins/env-manager/summary\ncurl -s http://127.0.0.1:3800/api/plugins/env-manager/cross-repo\n\nList each missing variable, which file references it, and which repo it is in.';
       break;
   }
-  if (msg) Symphonee.askAi(msg);
+  if (msg) Cadence.askAi(msg);
 }
 
 // ── Init ────────────────────────────────────────────────────────────────────
@@ -1094,7 +1094,7 @@ window.addEventListener('message', function (e) {
 
 init();
 
-Symphonee.on('tabActivated', function(data) {
+Cadence.on('tabActivated', function(data) {
   if (data && data.tab && data.tab.indexOf('env-manager') !== -1) {
     init();
   }

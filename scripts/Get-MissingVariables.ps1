@@ -1,12 +1,13 @@
 <#
 .SYNOPSIS
-    Reads every repository again and prints the report.
+    Variables the code reads that no env file defines (one repository, or every repository with -All).
 .EXAMPLE
-    ./scripts/Start-EnvScan.ps1
+    ./scripts/Get-MissingVariables.ps1 -Repo "MyRepo"
 #>
 [CmdletBinding()]
 param(
-
+    [string]$Repo = '',
+    [switch]$All
 )
 $ErrorActionPreference = 'Stop'
 $CadenceApi = if ($env:CADENCE_API) { $env:CADENCE_API } else { 'http://127.0.0.1:3800' }
@@ -16,5 +17,10 @@ function Get-Api($path) { Invoke-RestMethod -Uri "$CadenceApi$path" -Headers $he
 function Post-Api($path, $payload) { Invoke-RestMethod -Uri "$CadenceApi$path" -Method Post -Headers $headers -ContentType 'application/json' -Body ($payload | ConvertTo-Json -Depth 8) -TimeoutSec 300 }
 function Esc($s) { [uri]::EscapeDataString([string]$s) }
 function Out-Json($o, $d = 6) { ConvertTo-Json -InputObject $o -Depth $d }
-Post-Api '/api/plugins/env-manager/scan-all' @{} | Out-Null
-Get-Api '/api/plugins/env-manager/overview' | ConvertTo-Json -Depth 7
+if ($All -or -not $Repo) {
+  $ov = Get-Api '/api/plugins/env-manager/overview'
+  Out-Json @($ov.repos | Where-Object { $_.missing.Count -gt 0 } | ForEach-Object { [pscustomobject]@{ repo = $_.name; missing = $_.missing; unused = $_.unused } }) 4
+} else {
+  $d = Get-Api "/api/plugins/env-manager/repos/$(Esc $Repo)/detail"
+  [pscustomobject]@{ repo = $Repo; missing = @($d.missing); unused = @($d.unused) } | ConvertTo-Json -Depth 5
+}

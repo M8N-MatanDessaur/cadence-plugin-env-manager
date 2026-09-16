@@ -360,12 +360,160 @@ function scanRepo(repoPath, cfg) {
   };
 }
 
+// ── 3.0 helpers ────────────────────────────────────────────────────────────
+
+function findTemplateFiles(repoPath) {
+  try { return fs.readdirSync(repoPath).filter(function (n) { return (n === '.env' || n.startsWith('.env.') || n.startsWith('.env-')) && isTemplateEnv(n); }).sort(); } catch (_) { return []; }
+}
+
+// Whether git already tracks the file: the one exposure a .gitignore line cannot undo.
+function gitTracked(repoPath, fileName) {
+  try {
+    var r = require('child_process').spawnSync('git', ['ls-files', '--error-unmatch', '--', fileName], { cwd: repoPath, encoding: 'utf8', windowsHide: true, timeout: 5000 });
+    return r.status === 0;
+  } catch (_) { return false; }
+}
+
+function maskFor(value) {
+  if (!value) return '';
+  if (value.length <= 4) return '****';
+  return value.substring(0, 2) + '****' + value.substring(value.length - 2);
+}
+
+var PLACEHOLDER = /^(your[-_]|xxx|changeme|change[-_]me|todo|replace|<.*>|\$\{.*\}|example|placeholder|dummy|sample)/i;
+
+// Every line in the source tree that names the variable, with its line number.
+function findReferences(repoPath, key, extensions) {
+  var out = [];
+  var skip = ['node_modules', '.git', 'dist', 'build', '.next', 'out', 'bin', 'obj', '.nuxt', 'coverage', '__pycache__', '.venv', 'venv'];
+  var re = new RegExp('(process\\.env\\.' + key + '\\b|process\\.env\\[[\'"]' + key + '[\'"]\\]|import\\.meta\\.env\\.' + key + '\\b|Environment\\.GetEnvironmentVariable\\("' + key + '"\\)|os\\.environ(\\.get)?\\(?\\[?[\'"]' + key + '[\'"]|\\benv\\.' + key + '\\b|"' + key + '")');
+  (function walk(dir, depth) {
+    if (depth > 8 || out.length > 200) return;
+    var items = [];
+    try { items = fs.readdirSync(dir); } catch (_) { return; }
+    for (var i = 0; i < items.length; i++) {
+      var name = items[i];
+      if ((name.startsWith('.') && name !== '.env') || skip.indexOf(name) !== -1) continue;
+      var full = path.join(dir, name);
+      var st; try { st = fs.statSync(full); } catch (_) { continue; }
+      if (st.isDirectory()) { walk(full, depth + 1); continue; }
+      if (extensions.indexOf(path.extname(name).toLowerCase()) === -1 || st.size > 500000) continue;
+      var lines; try { lines = fs.readFileSync(full, 'utf8').split(/\r?\n/); } catch (_) { continue; }
+      for (var l = 0; l < lines.length; l++) if (re.test(lines[l])) { out.push({ file: path.relative(repoPath, full).replace(/\\/g, '/'), line: l + 1, text: lines[l].trim().slice(0, 160) }); if (out.length > 200) return; }
+    }
+  })(repoPath, 0);
+  return out;
+}
+
+// Set or add KEY=value in an env file without touching anything else (order, comments, spacing).
+function writeEnvValue(filePath, key, value) {
+  var content = '';
+  try { content = fs.readFileSync(filePath, 'utf8'); } catch (_) {}
+  var nl = content.indexOf('\r\n') !== -1 ? '\r\n' : '\n';
+  var lines = content.length ? content.split(/\r?\n/) : [];
+  var needsQuotes = /[\s#"']/.test(value) && !/^".*"$/.test(value);
+  var rendered = key + '=' + (needsQuotes ? '"' + value.replace(/"/g, '\\"') + '"' : value);
+  var done = false;
+  for (var i = 0; i < lines.length; i++) {
+    var t = lines[i].trim();
+    if (!t || t.startsWith('#')) continue;
+    var eq = t.indexOf('=');
+    if (eq !== -1 && t.substring(0, eq).trim() === key) { lines[i] = rendered; done = true; break; }
+  }
+  if (!done) { if (lines.length && lines[lines.length - 1] !== '') lines.push(rendered); else if (lines.length) lines.splice(lines.length - 1, 0, rendered); else lines.push(rendered); }
+  var text = lines.join(nl);
+  if (!text.endsWith(nl)) text += nl;
+  fs.writeFileSync(filePath, text, 'utf8');
+  return { updated: done, added: !done };
+}
+
+// Everything the 3.0 screens say about one repo, from a fresh scan.
+function describeRepo(repoName, repoPath, cfg) {
+  var scan = scanRepo(repoPath, cfg);
+  scanCache[repoName] = scan;
+  var patterns = getSecretPatterns(cfg);
+  var templates = findTemplateFiles(repoPath);
+  var templateKeys = {};
+  var templateData = {};
+  for (var t = 0; t < templates.length; t++) { var te = parseEnvFile(path.join(repoPath, templates[t])); templateData[templates[t]] = te; for (var k = 0; k < te.length; k++) templateKeys[te[k].key] = true; }
+  var files = scan.envFiles.map(function (fn) {
+    var ignored = isGitignored(repoPath, fn);
+    var tracked = gitTracked(repoPath, fn);
+    var entries = scan.fileData[fn] || [];
+    var secretsHere = entries.filter(function (e) { return isSecretKey(e.key, patterns) && e.value; }).length;
+    return { name: fn, variables: entries.length, secrets: secretsHere, empties: entries.filter(function (e) { return !e.value; }).length, ignored: ignored, tracked: tracked, exposed: tracked || (!ignored && secretsHere > 0), template: false };
+  });
+  var templateFiles = templates.map(function (fn) { return { name: fn, variables: (templateData[fn] || []).length, secrets: 0, empties: 0, ignored: isGitignored(repoPath, fn), tracked: gitTracked(repoPath, fn), exposed: false, template: true }; });
+  var variables = scan.variables.map(function (v) {
+    var cells = {};
+    var names = Object.keys(v.presence);
+    var emptyIn = [];
+    var placeholderIn = [];
+    var distinct = {};
+    for (var i = 0; i < names.length; i++) {
+      var pr = v.presence[names[i]];
+      if (pr.present) { if (!pr.value) emptyIn.push(names[i]); else { distinct[pr.value] = true; if (PLACEHOLDER.test(pr.value)) placeholderIn.push(names[i]); } }
+      cells[names[i]] = { present: pr.present, empty: pr.present && !pr.value, value: pr.present ? (v.isSecret ? maskFor(pr.value) : pr.value) : '', length: pr.present ? pr.value.length : 0, masked: v.isSecret && pr.present && !!pr.value };
+    }
+    var refs = scan.codeRefs[v.key] || [];
+    return { key: v.key, isSecret: v.isSecret, cells: cells, emptyIn: emptyIn, placeholderIn: placeholderIn, missingIn: names.filter(function (n) { return !v.presence[n].present; }), sameEverywhere: Object.keys(distinct).length <= 1, referencedIn: refs, referenced: refs.length > 0, inTemplate: !!templateKeys[v.key] };
+  });
+  var unused = variables.filter(function (v) { return !v.referenced; }).map(function (v) { return v.key; });
+  var driftMissingFromTemplate = templates.length ? variables.filter(function (v) { return !v.inTemplate; }).map(function (v) { return v.key; }) : [];
+  var driftOnlyInTemplate = Object.keys(templateKeys).filter(function (k) { return !scan.variables.some(function (v) { return v.key === k; }); });
+  var exposedFiles = files.filter(function (f) { return f.exposed; });
+  var risk = 0;
+  risk += files.filter(function (f) { return f.tracked; }).length * 40;
+  risk += files.filter(function (f) { return !f.tracked && f.exposed; }).length * 20;
+  risk += Math.min(30, scan.missing.length * 5);
+  risk += Math.min(15, driftMissingFromTemplate.length * 2);
+  risk += Math.min(10, variables.filter(function (v) { return v.placeholderIn.length; }).length * 3);
+  return {
+    name: repoName, path: repoPath, hasEnv: files.length > 0, hasTemplate: templates.length > 0,
+    files: files, templateFiles: templateFiles, variables: variables, totalVars: scan.totalVars,
+    secrets: scan.secrets.map(function (x) { return x.key; }), missing: scan.missing, unused: unused,
+    drift: { missingFromTemplate: driftMissingFromTemplate, onlyInTemplate: driftOnlyInTemplate, template: templates[0] || null },
+    exposed: exposedFiles.map(function (f) { return f.name; }), tracked: files.filter(function (f) { return f.tracked; }).map(function (f) { return f.name; }),
+    risk: Math.min(100, risk), scannedAt: new Date().toISOString(),
+  };
+}
+
 // In-memory cache of scan results per repo
 var scanCache = {};
+var overviewCache = null;
 
 // ── Route Registration ───────────────────────────────────────────────────────
 
-module.exports = function ({ addPrefixRoute, json, readBody, getConfig }) {
+
+// ---- Attention: what the Plugins home shows on this app's tile. Reads the plugin's own
+// routes over loopback (they carry their caches), never writes, answers within a minute.
+const __attention = { value: null, until: 0 };
+function __selfGet(req, path, timeoutMs) {
+  return new Promise((resolve) => {
+    const host = req.headers.host || `127.0.0.1:${process.env.CADENCE_PORT || 3801}`;
+    const lib = require('http');
+    const r = lib.get({ host: host.split(':')[0], port: Number(host.split(':')[1] || 80), path, headers: { 'x-cadence-internal': '1' } }, (resp) => { let d = ''; resp.on('data', (c) => { d += c; }); resp.on('end', () => { try { resolve(resp.statusCode < 400 ? JSON.parse(d) : null); } catch (_) { resolve(null); } }); });
+    r.on('error', () => resolve(null));
+    r.setTimeout(timeoutMs || 45000, () => { r.destroy(); resolve(null); });
+  });
+}
+function __attentionOut(items) {
+  const rank = { error: 3, warn: 2, warning: 2, info: 1 };
+  const list = (items || []).filter((i) => i && i.text).map((i) => ({ level: i.level === 'warning' ? 'warn' : (i.level || 'info'), text: String(i.text) }));
+  const level = list.reduce((top, i) => (rank[i.level] > rank[top] ? i.level : top), list.length ? 'info' : 'ok');
+  return { count: list.length, level, items: list, readAt: new Date().toISOString() };
+}
+async function __attentionHandler(req, res, url, compute, json) {
+  if (__attention.value && __attention.until > Date.now() && url.searchParams.get('refresh') !== '1') return json(res, __attention.value);
+  let out;
+  try { out = __attentionOut(await compute(req)); } catch (e) { out = { count: 0, level: 'ok', items: [], error: e.message, readAt: new Date().toISOString() }; }
+  __attention.value = out; __attention.until = Date.now() + 60000;
+  return json(res, out);
+}
+
+module.exports = function ({ addRoute, addPrefixRoute, json, readBody, getConfig, shell }) {
+  addRoute('GET', '/attention', (req, res, url) => __attentionHandler(req, res, url, async (req) => { const o = await __selfGet(req, '/api/plugins/env-manager/overview'); const t = o && o.totals; if (!t) return []; const out = []; if (t.exposedFiles) out.push({ level: 'error', text: `${t.exposedFiles} .env file${t.exposedFiles === 1 ? '' : 's'} not ignored by git.` }); if (t.trackedFiles) out.push({ level: 'error', text: `${t.trackedFiles} .env file${t.trackedFiles === 1 ? '' : 's'} tracked in git.` }); if (t.missing) out.push({ level: 'warn', text: `${t.missing} variable${t.missing === 1 ? '' : 's'} missing against the templates.` }); if (t.drift) out.push({ level: 'info', text: `${t.drift} variable${t.drift === 1 ? '' : 's'} differ between environments.` }); return out; }, json));
+  var permGate = shell && typeof shell.permGate === 'function' ? shell.permGate : null;
 
   function getRepos() {
     try {
@@ -470,7 +618,7 @@ module.exports = function ({ addPrefixRoute, json, readBody, getConfig }) {
         }
 
         if (repos.length === 0) {
-          lines.push('No repos configured in Symphonee.');
+          lines.push('No repos configured in Cadence.');
         }
 
         res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -672,6 +820,112 @@ module.exports = function ({ addPrefixRoute, json, readBody, getConfig }) {
       }
 
       // ── Per-repo routes (/repos/:repoName/...) ────────────────────────
+      // ── 3.0: the workspace in one call ──────────────────────────────────
+      if (subpath === '/overview' && method === 'GET') {
+        // Walking every repository's source takes seconds; keep the last answer two minutes unless asked fresh.
+        if (overviewCache && url.searchParams.get('fresh') !== '1' && Date.now() - overviewCache.at < 120000) return json(res, overviewCache.data);
+        var cfgO = getCfg();
+        var reposO = getRepos();
+        var rows = [];
+        var totals = { repos: 0, withEnv: 0, withTemplate: 0, files: 0, variables: 0, secrets: 0, exposedFiles: 0, trackedFiles: 0, missing: 0, unused: 0, drift: 0, placeholders: 0 };
+        for (var oi = 0; oi < reposO.length; oi++) {
+          var ro = reposO[oi];
+          var rp = getRepoPath(ro);
+          totals.repos++;
+          if (!rp || !fs.existsSync(rp)) { rows.push({ name: ro.name, path: rp, missingOnDisk: true, hasEnv: false, hasTemplate: false, files: [], templateFiles: [], totalVars: 0, secrets: [], missing: [], unused: [], drift: { missingFromTemplate: [], onlyInTemplate: [] }, exposed: [], tracked: [], risk: 0 }); continue; }
+          var d = describeRepo(ro.name, rp, cfgO);
+          var slim = { name: d.name, path: d.path, hasEnv: d.hasEnv, hasTemplate: d.hasTemplate, files: d.files, templateFiles: d.templateFiles, totalVars: d.totalVars, secrets: d.secrets, missing: d.missing.map(function (m) { return m.key; }), unused: d.unused, drift: d.drift, exposed: d.exposed, tracked: d.tracked, placeholders: d.variables.filter(function (v) { return v.placeholderIn.length; }).length, risk: d.risk, scannedAt: d.scannedAt };
+          rows.push(slim);
+          if (d.hasEnv) totals.withEnv++;
+          if (d.hasTemplate) totals.withTemplate++;
+          totals.files += d.files.length; totals.variables += d.totalVars; totals.secrets += d.secrets.length;
+          totals.exposedFiles += d.exposed.length; totals.trackedFiles += d.tracked.length;
+          totals.missing += d.missing.length; totals.unused += d.unused.length; totals.drift += d.drift.missingFromTemplate.length + d.drift.onlyInTemplate.length; totals.placeholders += slim.placeholders;
+        }
+        overviewCache = { at: Date.now(), data: { repos: rows, totals: totals, scannedAt: new Date().toISOString() } };
+        return json(res, overviewCache.data);
+      }
+
+      var m3 = subpath.match(/^\/repos\/([^/]+)\/(detail|variable|reveal|set|write-template|protect)$/);
+      if (m3) {
+        var rName = decodeURIComponent(m3[1]);
+        var rRepo = findRepo(rName);
+        if (!rRepo) return json(res, { error: 'Repo not found: ' + rName }, 404);
+        var rPath = getRepoPath(rRepo);
+        if (!rPath || !fs.existsSync(rPath)) return json(res, { error: 'Repo path not found on disk' }, 404);
+        var rCfg = getCfg();
+        var envNameOk = function (f) { return typeof f === 'string' && /^\.env(\.[\w.-]+|-[\w.-]+)?$/.test(f) && f.indexOf('/') === -1 && f.indexOf('\\') === -1; };
+
+        if (m3[2] === 'detail' && method === 'GET') {
+          var det = describeRepo(rName, rPath, rCfg);
+          var pats = getSecretPatterns(rCfg);
+          det.leaked = scanForLeakedSecrets(rPath, getScanExtensions(rCfg), pats).map(function (l) { return { file: l.file, line: l.line, pattern: l.matchedPattern || '', preview: (l.snippet || '').slice(0, 120) }; });
+          return json(res, det);
+        }
+
+        if (m3[2] === 'variable' && method === 'GET') {
+          var key = url.searchParams.get('key');
+          if (!key) return json(res, { error: 'key required' }, 400);
+          var det2 = describeRepo(rName, rPath, rCfg);
+          var v2 = det2.variables.find(function (x) { return x.key === key; }) || null;
+          var refs2 = findReferences(rPath, key, getScanExtensions(rCfg));
+          var inTemplates = det2.templateFiles.filter(function (tf) { return parseEnvFile(path.join(rPath, tf.name)).some(function (e) { return e.key === key; }); }).map(function (tf) { return tf.name; });
+          return json(res, { key: key, variable: v2, references: refs2, files: det2.files.map(function (f) { return f.name; }), inTemplates: inTemplates, isSecret: v2 ? v2.isSecret : isSecretKey(key, getSecretPatterns(rCfg)) });
+        }
+
+        if (m3[2] === 'reveal' && method === 'POST') {
+          if (permGate && !(await permGate(res, 'api', 'POST /api/plugins/env-manager/reveal', 'Reveal an environment value'))) return;
+          var b1 = await readBody(req);
+          if (!envNameOk(b1.file) || !b1.key) return json(res, { error: 'file and key required' }, 400);
+          var e1 = parseEnvFile(path.join(rPath, b1.file)).find(function (e) { return e.key === b1.key; });
+          return json(res, { key: b1.key, file: b1.file, value: e1 ? e1.value : null, present: !!e1 });
+        }
+
+        if (m3[2] === 'set' && method === 'POST') {
+          if (permGate && !(await permGate(res, 'api', 'POST /api/plugins/env-manager/set', 'Write an environment variable'))) return;
+          var b2 = await readBody(req);
+          if (!envNameOk(b2.file) || !b2.key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(b2.key)) return json(res, { error: 'file and a valid key required' }, 400);
+          var r2 = writeEnvValue(path.join(rPath, b2.file), b2.key, String(b2.value == null ? '' : b2.value));
+          delete scanCache[rName]; overviewCache = null;
+          return json(res, Object.assign({ ok: true, file: b2.file, key: b2.key }, r2));
+        }
+
+        if (m3[2] === 'write-template' && method === 'POST') {
+          if (permGate && !(await permGate(res, 'api', 'POST /api/plugins/env-manager/write-template', 'Write .env.example'))) return;
+          var b3 = await readBody(req);
+          var target = b3.file && isTemplateEnv(b3.file) && envNameOk(b3.file) ? b3.file : '.env.example';
+          var content3 = typeof b3.content === 'string' && b3.content.trim() ? b3.content : null;
+          if (!content3) {
+            // The same content the /template route builds, from the real files with secrets blanked.
+            var det3 = describeRepo(rName, rPath, rCfg);
+            var lines3 = ['# Environment variables for ' + rName, '# Copy to .env and fill in the values. Secrets are left blank on purpose.', ''];
+            for (var vi = 0; vi < det3.variables.length; vi++) {
+              var vv = det3.variables[vi];
+              var firstVal = '';
+              var names3 = Object.keys(vv.cells);
+              for (var ni = 0; ni < names3.length; ni++) if (vv.cells[names3[ni]].present && !vv.cells[names3[ni]].empty) { firstVal = vv.cells[names3[ni]].value; break; }
+              lines3.push(vv.key + '=' + (vv.isSecret ? '' : firstVal));
+            }
+            content3 = lines3.join('\n') + '\n';
+          }
+          fs.writeFileSync(path.join(rPath, target), content3, 'utf8');
+          overviewCache = null;
+          return json(res, { ok: true, file: target, bytes: Buffer.byteLength(content3) });
+        }
+
+        if (m3[2] === 'protect' && method === 'POST') {
+          if (permGate && !(await permGate(res, 'api', 'POST /api/plugins/env-manager/protect', 'Add env files to .gitignore'))) return;
+          var giPath = path.join(rPath, '.gitignore');
+          var gi = ''; try { gi = fs.readFileSync(giPath, 'utf8'); } catch (_) {}
+          var have = gi.split(/\r?\n/).map(function (l) { return l.trim(); });
+          var add = ['.env', '.env.*', '!.env.example', '!.env.template', '!.env.sample'].filter(function (l) { return have.indexOf(l) === -1; });
+          if (add.length) fs.writeFileSync(giPath, (gi && !gi.endsWith('\n') ? gi + '\n' : gi) + '\n# Environment files (Cadence)\n' + add.join('\n') + '\n', 'utf8');
+          var stillTracked = findEnvFiles(rPath).filter(function (f) { return gitTracked(rPath, f); });
+          delete scanCache[rName]; overviewCache = null;
+          return json(res, { ok: true, added: add, stillTracked: stillTracked, untrackCommand: stillTracked.length ? 'git rm --cached ' + stillTracked.join(' ') : null });
+        }
+      }
+
       var repoMatch = subpath.match(/^\/repos\/([^/]+)(\/.*)?$/);
       if (repoMatch) {
         var repoName = decodeURIComponent(repoMatch[1]);
@@ -815,7 +1069,7 @@ module.exports = function ({ addPrefixRoute, json, readBody, getConfig }) {
             scanCache[repoName] = cached;
           }
           var patterns = getSecretPatterns(cfg);
-          var lines = ['# Environment Variables Template', '# Generated by Symphonee Environment Manager', '# Copy this file to .env and fill in the values', ''];
+          var lines = ['# Environment Variables Template', '# Generated by Cadence Environment Manager', '# Copy this file to .env and fill in the values', ''];
 
           var keyList = Object.keys(cached.fileData);
           // Prefer .env as source, then .env.local, then first available
