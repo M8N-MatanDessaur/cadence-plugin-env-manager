@@ -481,6 +481,19 @@ function describeRepo(repoName, repoPath, cfg) {
 // In-memory cache of scan results per repo
 var scanCache = {};
 var overviewCache = null;
+var overviewPending = null;
+
+function overviewInWorker(repos, cfg) {
+  return new Promise(function (resolve, reject) {
+    var W = require('worker_threads').Worker;
+    var w = new W(path.join(__dirname, 'overview-worker.js'), { workerData: { repos: repos, cfg: cfg } });
+    var done = false;
+    var t = setTimeout(function () { if (!done) { done = true; w.terminate(); reject(new Error('timed out after 120 s')); } }, 120000);
+    w.once('message', function (m) { if (!done) { done = true; clearTimeout(t); resolve(m); } });
+    w.once('error', function (e) { if (!done) { done = true; clearTimeout(t); reject(e); } });
+    w.once('exit', function (code) { if (!done) { done = true; clearTimeout(t); reject(new Error('the scan stopped (' + code + ')')); } });
+  });
+}
 
 // ── Route Registration ───────────────────────────────────────────────────────
 
@@ -825,25 +838,12 @@ module.exports = function ({ addRoute, addPrefixRoute, json, readBody, getConfig
         // Walking every repository's source takes seconds; keep the last answer two minutes unless asked fresh.
         if (overviewCache && url.searchParams.get('fresh') !== '1' && Date.now() - overviewCache.at < 120000) return json(res, overviewCache.data);
         var cfgO = getCfg();
-        var reposO = getRepos();
-        var rows = [];
-        var totals = { repos: 0, withEnv: 0, withTemplate: 0, files: 0, variables: 0, secrets: 0, exposedFiles: 0, trackedFiles: 0, missing: 0, unused: 0, drift: 0, placeholders: 0 };
-        for (var oi = 0; oi < reposO.length; oi++) {
-          var ro = reposO[oi];
-          var rp = getRepoPath(ro);
-          totals.repos++;
-          if (!rp || !fs.existsSync(rp)) { rows.push({ name: ro.name, path: rp, missingOnDisk: true, hasEnv: false, hasTemplate: false, files: [], templateFiles: [], totalVars: 0, secrets: [], missing: [], unused: [], drift: { missingFromTemplate: [], onlyInTemplate: [] }, exposed: [], tracked: [], risk: 0 }); continue; }
-          var d = describeRepo(ro.name, rp, cfgO);
-          var slim = { name: d.name, path: d.path, hasEnv: d.hasEnv, hasTemplate: d.hasTemplate, files: d.files, templateFiles: d.templateFiles, totalVars: d.totalVars, secrets: d.secrets, missing: d.missing.map(function (m) { return m.key; }), unused: d.unused, drift: d.drift, exposed: d.exposed, tracked: d.tracked, placeholders: d.variables.filter(function (v) { return v.placeholderIn.length; }).length, risk: d.risk, scannedAt: d.scannedAt };
-          rows.push(slim);
-          if (d.hasEnv) totals.withEnv++;
-          if (d.hasTemplate) totals.withTemplate++;
-          totals.files += d.files.length; totals.variables += d.totalVars; totals.secrets += d.secrets.length;
-          totals.exposedFiles += d.exposed.length; totals.trackedFiles += d.tracked.length;
-          totals.missing += d.missing.length; totals.unused += d.unused.length; totals.drift += d.drift.missingFromTemplate.length + d.drift.onlyInTemplate.length; totals.placeholders += slim.placeholders;
-        }
-        overviewCache = { at: Date.now(), data: { repos: rows, totals: totals, scannedAt: new Date().toISOString() } };
-        return json(res, overviewCache.data);
+        var reposO = getRepos().map(function (ro) { return { name: ro.name, path: getRepoPath(ro) }; });
+        // The scan runs in a worker: on this thread it held every shell and screen for as long as it took.
+        // Callers that arrive while it runs share it rather than start another.
+        if (!overviewPending) overviewPending = overviewInWorker(reposO, cfgO).then(function (data) { overviewCache = { at: Date.now(), data: data }; return data; }).finally(function () { overviewPending = null; });
+        try { return json(res, await overviewPending); }
+        catch (e) { return json(res, { error: 'The overview scan failed: ' + e.message }, 500); }
       }
 
       var m3 = subpath.match(/^\/repos\/([^/]+)\/(detail|variable|reveal|set|write-template|protect)$/);
@@ -1142,3 +1142,6 @@ module.exports = function ({ addRoute, addPrefixRoute, json, readBody, getConfig
     }
   });
 };
+
+// The overview worker (overview-worker.js) reuses the scan.
+module.exports.describeRepo = describeRepo;
