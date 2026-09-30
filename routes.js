@@ -8,13 +8,19 @@ const path = require('path');
 
 const configPath = path.join(__dirname, 'config.json');
 
+// Cadence reads and writes this file for the plugin (ctx.pluginConfig): sealed at rest, so the
+// secrets in it are not in the clear on disk. On a Cadence without it, the file as before.
+let cfgIO = null;
+function readConfigFile() { return cfgIO ? cfgIO.read() : JSON.parse(fs.readFileSync(configPath, 'utf8')); }
+function writeConfigFile(data) { if (cfgIO) cfgIO.write(data); else fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf8'); }
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function getCfg() {
-  try { return JSON.parse(fs.readFileSync(configPath, 'utf8')); }
+  try { return readConfigFile(); }
   catch (_) { return { secretPatterns: 'PASSWORD,SECRET,TOKEN,KEY,API_KEY,PRIVATE,CREDENTIAL', scanExtensions: '.js,.ts,.jsx,.tsx,.cs,.py' }; }
 }
-function saveCfg(data) { fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf8'); }
+function saveCfg(data) { writeConfigFile(data); }
 
 var ENV_FILE_NAMES = ['.env', '.env.local', '.env.development', '.env.staging', '.env.production', '.env.test'];
 var ENV_TEMPLATE_NAMES = ['.env.example', '.env.template', '.env.sample'];
@@ -524,7 +530,8 @@ async function __attentionHandler(req, res, url, compute, json) {
   return json(res, out);
 }
 
-module.exports = function ({ addRoute, addPrefixRoute, json, readBody, getConfig, shell }) {
+module.exports = function ({ addRoute, addPrefixRoute, json, readBody, getConfig, shell, pluginConfig }) {
+  cfgIO = pluginConfig || null;
   addRoute('GET', '/attention', (req, res, url) => __attentionHandler(req, res, url, async (req) => { const o = await __selfGet(req, '/api/plugins/env-manager/overview'); const t = o && o.totals; if (!t) return []; const out = []; if (t.exposedFiles) out.push({ level: 'error', text: `${t.exposedFiles} .env file${t.exposedFiles === 1 ? '' : 's'} not ignored by git.` }); if (t.trackedFiles) out.push({ level: 'error', text: `${t.trackedFiles} .env file${t.trackedFiles === 1 ? '' : 's'} tracked in git.` }); if (t.missing) out.push({ level: 'warn', text: `${t.missing} variable${t.missing === 1 ? '' : 's'} missing against the templates.` }); if (t.drift) out.push({ level: 'info', text: `${t.drift} variable${t.drift === 1 ? '' : 's'} differ between environments.` }); return out; }, json));
   var permGate = shell && typeof shell.permGate === 'function' ? shell.permGate : null;
 
